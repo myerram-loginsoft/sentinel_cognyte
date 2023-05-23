@@ -1,28 +1,21 @@
 """
-__init__.py
+init.py
 
-This module provides a set of functions for communicating with the Luminar API. The main purpose of these functions is to
-retrieve and process security indicators from Luminar, transform the indicators into a compatible format, and save them
-for later use.
+This module provides a set of functions for communicating with the Luminar API. The main purpose of these functions is to retrieve and process security indicators and leaked credentials from Luminar, transform them into a compatible format, and save them into Azure Sentinel.
 
 Main components:
 
-- LuminarManager: A class that manages interactions with the Luminar API. It is responsible for requesting and refreshing
-  access tokens, and managing the status of the connection.
+LuminarManager: This class manages interactions with the Luminar API. It is responsible for requesting and refreshing access tokens, as well as managing the connection status.
 
-- process_malware, enrich_malware_items, enrich_incident_items: Functions for processing malware and incident items,
-  creating enriched data for each item.
+process_malware, enrich_malware_items, enrich_incident_items: These functions process malware and incident items and create enriched data for each.
 
-- create_data, get_static_data: Functions for transforming raw indicators into a compatible format.
+create_data, get_static_data: These functions transform raw indicators into a format compatible with Azure Sentinel.
 
-- luminar_api_fetch: Function for fetching data from the Luminar API, processing the fetched items, and handling
-  relationships between items.
+luminar_api_fetch: This function fetches data from the Luminar API, processes the fetched items, and manages relationships between items.
 
-- main: Main function to handle Luminar API requests. It initializes the Luminar manager, requests and refreshes access
-  tokens, handles Luminar API calls, and handles pagination to ensure all pages of data are retrieved. It uses a timer
-  trigger to run at specified intervals.
+main: This function handles Luminar API requests. It initializes the Luminar manager, requests and refreshes access tokens, manages Luminar API calls, and handles pagination to ensure all pages of data are retrieved. A timer trigger allows it to run at specified intervals.
 
-This module is designed to be used as part of an Azure Function App and requires certain environment variables to be set.
+This module is designed for use as part of an Azure Function App and requires certain environment variables to be set.
 """
 
 import logging
