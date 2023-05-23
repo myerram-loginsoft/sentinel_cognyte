@@ -63,10 +63,7 @@ client_secret = os.getenv("client_secret")
 luminar_client_id = os.getenv("luminar_client_id")
 luminar_client_secret = os.getenv("luminar_client_secret")
 luminar_account_id = os.getenv("luminar_account_id")
-state = StateManager(
-    "DefaultEndpointsProtocol=https;AccountName=cognyteresourcegroub22a;AccountKey=rLFsWpBkQZbeKhCcVrItg1dS/"
-    "KAR64mVhVaHNMeyG1925kTz0fOKIczmL/5BoJ90cxpgqL42bclF+AStXYDQlQ==;EndpointSuffix=core.windows.net"
-)
+state = StateManager(os.getenv('AzureWebJobsStorage'))
 
 TOKEN_ENDPOINT = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
 HEADERS = {
