@@ -57,6 +57,8 @@ IOC_MAPPING = {
     "mutex": "MUTEX",
     "windows-registry-key": "WINDOWS_REGISTRY_KEY",
 }
+# There's a limit of 100 tiIndicators per request.
+MAX_TI_INDICATORS_PER_REQUEST = 100
 
 ENDPOINT = "https://graph.microsoft.com/beta/security/tiIndicators/submitTiIndicators"
 LUMINAR_BASE_URL = "https://demo.cyberluminar.com/"
@@ -73,25 +75,41 @@ state = StateManager(
     "KAR64mVhVaHNMeyG1925kTz0fOKIczmL/5BoJ90cxpgqL42bclF+AStXYDQlQ==;EndpointSuffix=core.windows.net"
 )
 
+TOKEN_ENDPOINT = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+HEADERS = {
+    "content-type": "application/x-www-form-urlencoded",
+    "accept": "application/json",
+}
+PAYLOAD = {
+    "grant_type": "client_credentials",
+    "client_id": client_id,
+    "client_secret": client_secret,
+    "scope": SCOPE,
+}
+
+session = requests.Session()
+
 
 def get_last_saved_timestamp(date_format="%Y-%m-%d %H:%M:%S"):
     """
     This function retrieves the last saved timestamp from the state. If no timestamp is found, it returns 0.
 
     Parameters:
-    date_format (str): The format in which the date and time are represented. Default is '%Y-%m-%d %H:%M:%S' which represents YYYY-MM-DD HH:MM:SS format.
+    date_format (str): The format in which the date and time are represented. Default is '%Y-%m-%d %H:%M:%S' which
+    represents YYYY-MM-DD HH:MM:SS format.
 
     Returns:
-    int: The timestamp of the last successful run of this function as a Unix timestamp. If the function is being run for the first time, it returns 0.
+    int: The timestamp of the last successful run of this function as a Unix timestamp. If the function is being run for
+    the first time, it returns 0.
     """
     last_run_date_time = state.get()
     logging.debug("last saved time stamp is %s", last_run_date_time)
 
-    if last_run_date_time is None:
-        return 0
-
-    from_date_time = datetime.strptime(last_run_date_time, date_format)
-    return int(from_date_time.timestamp())
+    return (
+        int(datetime.strptime(last_run_date_time, date_format).timestamp())
+        if last_run_date_time
+        else 0
+    )
 
 
 def save_timestamp(date_format: str = "%Y-%m-%d %H:%M:%S") -> None:
@@ -109,45 +127,43 @@ def save_timestamp(date_format: str = "%Y-%m-%d %H:%M:%S") -> None:
     state.post(format(current_date_time, date_format))
 
 
+def get_access_token() -> Optional[str]:
+    """
+    This function fetches the access token from Sentinel.
+    Returns:
+    str: The access token if the request was successful, None otherwise.
+    """
+    try:
+        response = session.post(
+            TOKEN_ENDPOINT, data=PAYLOAD, headers=HEADERS, timeout=TIMEOUT
+        )
+        response.raise_for_status()  # check if we got a HTTP error
+        return response.json().get("access_token")
+    except requests.HTTPError as http_err:
+        logging.error("HTTP error occurred: %s", http_err)
+        return None
+
+
 def save_sentinel_data(data: dict) -> None:
     """
     This function sends the data to Sentinel using an access token.
     Parameters:
     data (dict): The data to be sent to Sentinel.
-
     Returns:
     None
     """
-    token_endpoint = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
-    headers = {
-        "content-type": "application/x-www-form-urlencoded",
-        "accept": "application/json",
-    }
-
-    try:
-        response = requests.post(
-            token_endpoint,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "scope": SCOPE,
-            },
-            headers=headers,
-            timeout=TIMEOUT
-        )
-        response.raise_for_status()  # check if we got a HTTP error
-    except requests.HTTPError as http_err:
-        logging.error("HTTP error occurred: %s", http_err)
+    access_token = get_access_token()
+    if not access_token:
+        logging.error("Unable to retrieve access token")
         return
 
-    access_token = response.json()["access_token"]
+    headers = HEADERS.copy()
     headers.update(
         {"Authorization": f"Bearer {access_token}", "Content-type": "application/json"}
     )
 
     try:
-        response = requests.post(ENDPOINT, headers=headers, json=data, timeout=TIMEOUT)
+        response = session.post(ENDPOINT, headers=headers, json=data, timeout=TIMEOUT)
         response.raise_for_status()  # check if we got a HTTP error
     except requests.HTTPError as http_err:
         logging.error("HTTP error occurred: %s", http_err)
@@ -242,14 +258,24 @@ def create_data(
         }
 
         handler = handlers.get(indicator_type)
-        data = get_static_data(indicator, indicator_type)
+        if not handler:
+            logging.warning("No handler for indicator type %s", indicator_type)
+            return {}
 
-        if handler:
-            data.update(handler())
+        data = get_static_data(indicator, indicator_type)
+        data.update(handler())
         return data
+
+    except KeyError as err:
+        logging.error("Missing key in indicator: %s", err)
     except Exception as err:
-        logging.error("Error while creating azure sentinel IOC Format %s", err)
-        return
+        logging.error(
+            "Unexpected error occurred while creating azure sentinel IOC Format: %s: %s",
+            type(err).__name__,
+            err,
+        )
+
+    return {}
 
 
 def chunks(data: List[Any], size: int) -> Generator[List[Any], None, None]:
@@ -287,7 +313,10 @@ def luminar_api_fetch(all_objects: List[Dict[str, Any]]) -> None:
     except (ValueError, TypeError, KeyError) as err:
         logging.error("Error while fetching and processing data: %s", err)
 
-def process_objects(all_objects: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Dict[str, List[str]]]:
+
+def process_objects(
+    all_objects: List[Dict[str, Any]]
+) -> Tuple[Dict[str, Any], Dict[str, List[str]]]:
     """
     Processes all objects and establishes relationships.
 
@@ -304,10 +333,13 @@ def process_objects(all_objects: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], 
         item_by_id[item["id"]] = item
         if item.get("type") == "relationship":
             relationships.setdefault(item["target_ref"], []).append(item["source_ref"])
-    
+
     return item_by_id, relationships
 
-def enrich_items(item_by_id: Dict[str, Any], relationships: Dict[str, List[str]]) -> None:
+
+def enrich_items(
+    item_by_id: Dict[str, Any], relationships: Dict[str, List[str]]
+) -> None:
     """
     Enriches malware and incident items.
 
@@ -321,13 +353,16 @@ def enrich_items(item_by_id: Dict[str, Any], relationships: Dict[str, List[str]]
     for key, group in relationships.items():
         parent = item_by_id.get(key)
         if parent:
-            children = [item_by_id.get(item_id) for item_id in group if item_by_id.get(item_id)]
+            children = [
+                item_by_id.get(item_id) for item_id in group if item_by_id.get(item_id)
+            ]
             if not children:
                 continue
             if parent.get("type") == "malware":
                 enrich_malware_items(parent, children)
             elif parent.get("type") == "incident":
                 enrich_incident_items(parent, children)
+
 
 def luminar_expiration_iocs(all_objects: List[Dict[str, Any]]) -> None:
     """
@@ -342,10 +377,12 @@ def luminar_expiration_iocs(all_objects: List[Dict[str, Any]]) -> None:
     None
     """
     iocs = [
-        x for x in all_objects 
+        x
+        for x in all_objects
         if x.get("type") == "indicator"
         and x.get("valid_until")
-        and datetime.strptime((x.get("valid_until"))[:19], "%Y-%m-%dT%H:%M:%S") >= datetime.today()
+        and datetime.strptime((x.get("valid_until"))[:19], "%Y-%m-%dT%H:%M:%S")
+        >= datetime.today()
     ]
     enrich_malware_items({}, iocs)
 
@@ -440,7 +477,7 @@ def enrich_malware_items(
                 continue
             chunk_data = create_data(children, children["indicator_type"])
             batch_data.append(chunk_data)
-        except Exception as err:
+        except (KeyError, TypeError) as err:
             logging.error("Error while creating data: %s", err)
     save_batch_data(batch_data)
 
@@ -464,7 +501,7 @@ def enrich_incident_items(
         try:
             chunk_data = create_data(children, "INCIDENT")
             batch_data.append(chunk_data)
-        except Exception as err:
+        except (KeyError, TypeError) as err:
             logging.error("Error while creating data: %s", err)
     save_batch_data(batch_data)
 
@@ -479,7 +516,7 @@ def save_batch_data(batch_data: List[Dict[str, Any]]) -> None:
     Returns:
     None
     """
-    for chunk in chunks(batch_data, 100):
+    for chunk in chunks(batch_data, MAX_TI_INDICATORS_PER_REQUEST):
         try:
             save_sentinel_data({"value": chunk})
         except Exception as err:
@@ -519,7 +556,7 @@ class LuminarManager:
             "client_secret": self.client_secret,
             "grant_type": "client_credentials",
         }
-        self.req_headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        self.req_headers = HEADERS
 
     def make_request(self) -> Tuple[Union[bool, str], str]:
         """
@@ -593,8 +630,8 @@ def main(mytimer: func.TimerRequest) -> None:
     )
 
     # Define the params with the timestamp
-    #params = {"limit": 100, "offset": 0, "timestamp": get_last_saved_timestamp()}
-    params = {"limit": 100, "offset": 0, "timestamp": 0}
+    params = {"limit": 100, "offset": 0, "timestamp": get_last_saved_timestamp()}
+
     has_more_data = True
 
     try:
